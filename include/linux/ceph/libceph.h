@@ -53,6 +53,8 @@ struct ceph_options {
 	unsigned long osd_keepalive_timeout;	/* jiffies */
 	unsigned long osd_request_timeout;	/* jiffies */
 
+	u32 osd_req_flags;  /* CEPH_OSD_FLAG_*, applied to each OSD request */
+
 	/*
 	 * any type that can't be simply compared or doesn't need
 	 * to be compared should go beyond this point,
@@ -64,6 +66,7 @@ struct ceph_options {
 	int num_mon;
 	char *name;
 	struct ceph_crypto_key *key;
+	struct rb_root crush_locs;
 };
 
 /*
@@ -188,7 +191,7 @@ static inline int calc_pages_for(u64 off, u64 len)
 #define RB_CMP3WAY(a, b) ((a) < (b) ? -1 : (a) > (b))
 
 #define DEFINE_RB_INSDEL_FUNCS2(name, type, keyfld, cmpexp, keyexp, nodefld) \
-static void insert_##name(struct rb_root *root, type *t)		\
+static bool __insert_##name(struct rb_root *root, type *t)		\
 {									\
 	struct rb_node **n = &root->rb_node;				\
 	struct rb_node *parent = NULL;					\
@@ -206,11 +209,17 @@ static void insert_##name(struct rb_root *root, type *t)		\
 		else if (cmp > 0)					\
 			n = &(*n)->rb_right;				\
 		else							\
-			BUG();						\
+			return false;					\
 	}								\
 									\
 	rb_link_node(&t->nodefld, parent, n);				\
 	rb_insert_color(&t->nodefld, root);				\
+	return true;							\
+}									\
+static void __maybe_unused insert_##name(struct rb_root *root, type *t)	\
+{									\
+	if (!__insert_##name(root, t))					\
+		BUG();							\
 }									\
 static void erase_##name(struct rb_root *root, type *t)			\
 {									\
@@ -272,6 +281,7 @@ extern struct kmem_cache *ceph_cap_flush_cachep;
 extern struct kmem_cache *ceph_dentry_cachep;
 extern struct kmem_cache *ceph_file_cachep;
 extern struct kmem_cache *ceph_dir_file_cachep;
+extern struct kmem_cache *ceph_mds_request_cachep;
 
 /* ceph_common.c */
 extern bool libceph_compatible(void *data);
@@ -281,11 +291,12 @@ extern int ceph_check_fsid(struct ceph_client *client, struct ceph_fsid *fsid);
 extern void *ceph_kvmalloc(size_t size, gfp_t flags);
 
 struct fs_parameter;
+struct fc_log;
 struct ceph_options *ceph_alloc_options(void);
 int ceph_parse_mon_ips(const char *buf, size_t len, struct ceph_options *opt,
-		       struct fs_context *fc);
+		       struct fc_log *l);
 int ceph_parse_param(struct fs_parameter *param, struct ceph_options *opt,
-		     struct fs_context *fc);
+		     struct fc_log *l);
 int ceph_print_client_options(struct seq_file *m, struct ceph_client *client,
 			      bool show_all);
 extern void ceph_destroy_options(struct ceph_options *opt);

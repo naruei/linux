@@ -81,7 +81,7 @@ int smp_affinity_enable = 1;
 module_param(smp_affinity_enable, int, 0444);
 MODULE_PARM_DESC(smp_affinity_enable, "SMP affinity feature enable/disable Default: enable(1)");
 
-int rdpq_enable = 1;
+static int rdpq_enable = 1;
 module_param(rdpq_enable, int, 0444);
 MODULE_PARM_DESC(rdpq_enable, "Allocate reply queue in chunks for large queue depth enable/disable Default: enable(1)");
 
@@ -89,7 +89,7 @@ unsigned int dual_qdepth_disable;
 module_param(dual_qdepth_disable, int, 0444);
 MODULE_PARM_DESC(dual_qdepth_disable, "Disable dual queue depth feature. Default: 0");
 
-unsigned int scmd_timeout = MEGASAS_DEFAULT_CMD_TIMEOUT;
+static unsigned int scmd_timeout = MEGASAS_DEFAULT_CMD_TIMEOUT;
 module_param(scmd_timeout, int, 0444);
 MODULE_PARM_DESC(scmd_timeout, "scsi command timeout (10-90s), default 90s. See megasas_reset_timer.");
 
@@ -1982,9 +1982,9 @@ static void megasas_set_fw_assisted_qd(struct scsi_device *sdev,
 
 	if (is_target_prop) {
 		tgt_device_qd = le32_to_cpu(instance->tgt_prop->device_qdepth);
-		if (tgt_device_qd &&
-		    (tgt_device_qd <= instance->host->can_queue))
-			device_qd = tgt_device_qd;
+		if (tgt_device_qd)
+			device_qd = min(instance->host->can_queue,
+					(int)tgt_device_qd);
 	}
 
 	if (instance->enable_sdev_max_qd && interface_type != UNKNOWN_DRIVE)
@@ -2987,9 +2987,10 @@ megasas_dump_sys_regs(void __iomem *reg_set, char *buf)
 	u32 __iomem *reg = (u32 __iomem *)reg_set;
 
 	for (i = 0; i < sz / sizeof(u32); i++) {
-		bytes_wrote += snprintf(loc + bytes_wrote, PAGE_SIZE,
-					"%08x: %08x\n", (i * 4),
-					readl(&reg[i]));
+		bytes_wrote += scnprintf(loc + bytes_wrote,
+					 PAGE_SIZE - bytes_wrote,
+					 "%08x: %08x\n", (i * 4),
+					 readl(&reg[i]));
 	}
 	return bytes_wrote;
 }
@@ -7604,7 +7605,6 @@ megasas_resume(struct pci_dev *pdev)
 	int rval;
 	struct Scsi_Host *host;
 	struct megasas_instance *instance;
-	int irq_flags = PCI_IRQ_LEGACY;
 	u32 status_reg;
 
 	instance = pci_get_drvdata(pdev);
@@ -7673,16 +7673,15 @@ megasas_resume(struct pci_dev *pdev)
 	atomic_set(&instance->ldio_outstanding, 0);
 
 	/* Now re-enable MSI-X */
-	if (instance->msix_vectors) {
-		irq_flags = PCI_IRQ_MSIX;
-		if (instance->smp_affinity_enable)
-			irq_flags |= PCI_IRQ_AFFINITY;
+	if (instance->msix_vectors)
+		megasas_alloc_irq_vectors(instance);
+
+	if (!instance->msix_vectors) {
+		rval = pci_alloc_irq_vectors(instance->pdev, 1, 1,
+					     PCI_IRQ_LEGACY);
+		if (rval < 0)
+			goto fail_reenable_msix;
 	}
-	rval = pci_alloc_irq_vectors(instance->pdev, 1,
-				     instance->msix_vectors ?
-				     instance->msix_vectors : 1, irq_flags);
-	if (rval < 0)
-		goto fail_reenable_msix;
 
 	megasas_setup_reply_map(instance);
 
@@ -8226,8 +8225,8 @@ megasas_mgmt_fw_ioctl(struct megasas_instance *instance,
 			"return -EBUSY from %s %d cmd 0x%x opcode 0x%x cmd->cmd_status_drv 0x%x\n",
 			 __func__, __LINE__, cmd->frame->hdr.cmd, opcode,
 			 cmd->cmd_status_drv);
-			error = -EBUSY;
-			goto out;
+		error = -EBUSY;
+		goto out;
 	}
 
 	cmd->sync_cmd = 0;
